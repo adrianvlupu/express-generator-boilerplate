@@ -1,3 +1,3 @@
 # Express-generator Boilerplate
 
-Minimal Express boilerplate with mongoose, handlebars, swagger, and integration tests.
+Minimal Express boilerplate with mongoose, handlebars, oauth, and integration tests.

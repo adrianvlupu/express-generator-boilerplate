@@ -36,7 +36,9 @@ invalid_grant
         another client.
 */
 
-module.exports = self => async (req, res, next) => {
+//TODO: refresh tokens should be invalidated after use
+
+module.exports = self => async (req, res) => {
     const grant_type = req.body.grant_type;
     if (!grant_type) {
         /*
@@ -47,7 +49,7 @@ module.exports = self => async (req, res, next) => {
                utilizes more than one mechanism for authenticating the
                client, or is otherwise malformed.
         */
-        await self.onThreat(5, 'token', req.ip, 'invalid_request', `no grant_type`);
+        await self.handleThreat(5, 'token', req.ip, 'invalid_request', 'no grant_type');
 
         return res.status(400).json({ error: 'invalid_request', error_description: 'grant_type required' });
     }
@@ -57,7 +59,7 @@ module.exports = self => async (req, res, next) => {
                The authorization grant type is not supported by the
                authorization server.
         */
-        await self.onThreat(5, 'token', req.ip, 'unsupported_grant_type', `${grant_type} grant_type is unsupported by authorization server`);
+        await self.handleThreat(5, 'token', req.ip, 'unsupported_grant_type', `${grant_type} grant_type is unsupported by authorization server`);
 
         return res.status(400).json({ error: 'unsupported_grant_type', error_description: 'grant_type unsupported by the authorization server' });
     }
@@ -78,7 +80,7 @@ module.exports = self => async (req, res, next) => {
                include the "WWW-Authenticate" response header field
                matching the authentication scheme used by the client.
         */
-        await self.onThreat(5, 'token', req.ip, 'invalid_client', 'authorization required');
+        await self.handleThreat(5, 'token', req.ip, 'invalid_client', 'authorization required');
 
         res.set('WWW-Authenticate', 'Basic realm=Authorization Required');
         return res.status(401).json({ error: 'invalid_client', error_description: 'authorization required' });
@@ -86,36 +88,36 @@ module.exports = self => async (req, res, next) => {
 
     let client = await Client.findOne({ key: header.name });
     if (!client) {
-        await self.onThreat(5, 'token', req.ip, 'invalid_client', `client ${header.name} not found`);
+        await self.handleThreat(5, 'token', req.ip, 'invalid_client', `client ${header.name} not found`);
 
         return res.status(400).json({ error: 'invalid_client', error_description: 'client not found' });
     }
     if (client.isDisabled) {
-        await self.onThreat(5, 'token', req.ip, 'invalid_client', `client is disabled`);
+        await self.handleThreat(5, 'token', req.ip, 'invalid_client', 'client is disabled');
 
         return res.status(400).json({ error: 'invalid_client', error_description: 'client not found' });
     }
     if (client.secret !== header.pass) {
-        await self.onThreat(5, 'token', req.ip, 'invalid_client', `bad secret`, null, client);
+        await self.handleThreat(5, 'token', req.ip, 'invalid_client', 'bad secret', null, client);
 
         return res.status(400).json({ error: 'invalid_client', error_description: 'client not found' });
     }
     if (client.ipWhitelist && client.ipWhitelist.length > 0) {
         if (!client.ipWhitelist.find(x => x === req.ip)) {
-            await self.onThreat(5, 'token', req.ip, 'invalid_client', `ip does not match client whitelist`, null, client);
+            await self.handleThreat(5, 'token', req.ip, 'invalid_client', 'ip does not match client whitelist', null, client);
 
             return res.status(401).json({ error: 'invalid_client', error_description: 'client not found' });
         }
     }
     if (!client.grants || client.grants.length === 0) {
-        await self.onThreat(5, 'token', req.ip, 'invalid_client', `client does not have grants configured`, null, client);
+        await self.handleThreat(5, 'token', req.ip, 'invalid_client', 'client does not have grants configured', null, client);
 
         return res.status(401).json({ error: 'invalid_client', error_description: 'client' });
     }
 
     let tokenExpirationSeconds = client.tokenExpirationSeconds;
     let scopes = client.scopes || [];
-    let claims = {};
+    let claims = { clientid: client._id };
 
     //check allowed client grant types
     let grant = client.grants.find(x => x.type === req.body.grant_type);
@@ -125,7 +127,7 @@ module.exports = self => async (req, res, next) => {
                The authenticated client is not authorized to use this
                authorization grant type.
         */
-        await self.onThreat(5, 'token', req.ip, 'unauthorized_client', `grant ${req.body.grant_type} now allowed by client`, null, client);
+        await self.handleThreat(5, 'token', req.ip, 'unauthorized_client', `grant ${req.body.grant_type} now allowed by client`, null, client);
 
         return res.status(400).json({ error: 'unauthorized_client', error_description: 'the client is not authorized to use the grant_type' });
     }
@@ -151,12 +153,12 @@ module.exports = self => async (req, res, next) => {
         //find user
         let user = await User.findOne({ username: req.body.username, isDisabled: false });
         if (!user) {
-            await self.onThreat(4, 'token', req.ip, 'access_denied', `user ${req.body.username} not found`, null, client, user)
+            await self.handleThreat(4, 'token', req.ip, 'access_denied', `user ${req.body.username} not found`, null, client, user);
 
             return res.status(401).json({ error: 'access_denied', error_description: 'username or password is incorrect' });
         }
         //compare password
-        let passCheck = await new Promise((resolve, reject) => {
+        let passCheck = await new Promise((resolve) => {
             bcrypt.compare(req.body.password, user.hash, (err, res) => {
                 if (res)
                     return resolve(true);
@@ -165,7 +167,7 @@ module.exports = self => async (req, res, next) => {
             });
         });
         if (!passCheck) {
-            await self.onThreat(4, 'token', req.ip, 'access_denied', `user ${req.body.username} bad password`, null, client, user)
+            await self.handleThreat(4, 'token', req.ip, 'access_denied', `user ${req.body.username} bad password`, null, client, user);
 
             return res.status(401).json({ error: 'access_denied', error_description: 'username or password is incorrect' });
         }
@@ -177,13 +179,14 @@ module.exports = self => async (req, res, next) => {
         user.lastLogin = new Date();
         await user.save();
         claims.username = user.username;
+        claims.userid = user._id;
     }
 
     if (grant_type === 'refresh_token') {
         if (!req.body.refresh_token)
             return res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token required' });
 
-        let jwtVerify = await new Promise((resolve, reject) => {
+        let jwtVerify = await new Promise((resolve) => {
             jwt.verify(req.body.refresh_token, self.config.refreshSecret, (err, decoded) => {
                 if (err)
                     return resolve(false);
@@ -192,12 +195,21 @@ module.exports = self => async (req, res, next) => {
             });
         });
         if (!jwtVerify) {
-            await self.onThreat(4, 'token', req.ip, 'invalid_request', `refresh token is not valid`, null, client)
+            await self.handleThreat(4, 'token', req.ip, 'invalid_request', 'refresh token is not valid', null, client);
 
             return res.status(401).json({ error: 'invalid_request', error_description: 'refresh token is not valid' });
         }
 
+        //if the user no longer exists or is blocked he should not be able to obtain a new token
+        if (jwtVerify.userid) {
+            let user = await User.findOne({ _id: jwtVerify.userid, isDisabled: false });
+            if (!user)
+                return res.status(401).json({ error: 'access_denied', error_description: 'refresh token is not valid' });
+        }
+
         scopes = jwtVerify.scope;
+        claims.username = jwtVerify.username;
+        claims.userid = jwtVerify.userid;
     }
 
     /*
@@ -210,13 +222,13 @@ module.exports = self => async (req, res, next) => {
         for (const requestedScope of requestedScopes) {
             if (requestedScope === 'refresh') {
                 if (!client.grants.find(x => x.type === 'refresh_token')) {
-                    await self.onThreat(5, 'token', req.ip, 'invalid_scope', `${requestedScope} scope is not allowed`, null, client);
+                    await self.handleThreat(5, 'token', req.ip, 'invalid_scope', `${requestedScope} scope is not allowed`, null, client);
 
                     return res.status(400).json({ error: 'invalid_scope', error_description: `accepted scopes: ${scopes.join(' ')}` });
                 }
             }
             else if (!scopes.find(x => x === requestedScope)) {
-                await self.onThreat(5, 'token', req.ip, 'invalid_scope', `${requestedScope} scope is not allowed`, null, client);
+                await self.handleThreat(5, 'token', req.ip, 'invalid_scope', `${requestedScope} scope is not allowed`, null, client);
 
                 return res.status(400).json({ error: 'invalid_scope', error_description: `accepted scopes: ${scopes.join(' ')}` });
             }
@@ -234,16 +246,7 @@ module.exports = self => async (req, res, next) => {
     res.header('Cache-Control', 'no-store');
     res.header('Pragma', 'no-cache');
 
-    let token = jwt.sign(
-        {
-            iss: self.config.issuer,
-            aud: self.config.audience,
-            scope: scopes,
-            ...claims
-        },
-        self.config.secret,
-        { expiresIn: tokenExpirationSeconds + 's' }
-    );
+    let token = self.createToken(scopes, claims, tokenExpirationSeconds);
 
     let refresh_token;
     if (scopes.find(x => x === 'refresh'))

@@ -10,10 +10,15 @@ const logger = require('morgan');
 const chalk = require('chalk');
 const dbConnect = require('./data');
 const moment = require('moment');
+const mongoose = require('mongoose');
 
 const basicAuth = require('basic-auth');
 
 var cors = require('cors');
+if (process.env.BEHIND_PROXY) {
+    console.log(chalk.bold.red('app set to trust proxy'));
+    app.set('trust proxy', 1);
+}
 
 if (process.env.NODE_ENV !== 'test')
     dbConnect(process.env.DB_CONNECTION_STRING);
@@ -58,20 +63,22 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 //auth
-const OAuth = require('./oauth');
-let oauth = new OAuth({
-    secret: process.env['JWT_SECRET'],
-    refreshSecret: process.env['JWT_REFRESH_SECRET'],
-    issuer: 'express.boilerplate',
-    audience: 'express.eco',
-    enableLogThreat: true,
-    
-    onThreat: (threat) => {
-        // console.log('make a decision on threat', threat);
-        //block the user, or the app. Ban the IP
+const oauth = require('./auth.instance');
+let ExpressBrute = require('express-brute');
+let MongoStore = require('express-brute-mongo');
+let store = new MongoStore(ready => ready(mongoose.connection.collection('bruteforce-store')));
+app.post('/token', new ExpressBrute(store, {
+    freeRetries: 1000,
+    minWait: 1 * 60 * 1000, //ms
+    maxWait: 60 * 60 * 1000, //ms
+    lifetime: 6 * 60 * 60, //window in seconds
+    attachResetToRequest: false,
+    refreshTimeoutOnRequest: false,
+    failCallback: (req, res, next, nextValidRequestDate) => {
+        oauth.handleThreat(3, req.originalUrl, req.ip, 'brute', 'brute force attempt');
+        return res.status(429).json({ error: `too many requests in this time frame. Next validation date is ${moment(nextValidRequestDate)}` });
     }
-});
-app.post('/token', oauth.tokenEndpoint);
+}).prevent, oauth.tokenEndpoint);
 
 //routes
 app.use('/ping', require('./routes/ping'));

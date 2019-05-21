@@ -10,16 +10,13 @@ const expect = chai.expect;
 describe('/ping integration tests', () => {
     before(done => {
         dbConnect(process.env.DB_CONNECTION_STRING);
-        mongoose.connection.on('connected', () => {
-            //drop collections
-            mongoose.connection.db.dropCollection('pings');
-
-            done();
-        });
+        mongoose.connection.on('connected', done);
     });
 
     after(done => {
-        mongoose.connection.close(done);
+        mongoose.connection.db.dropDatabase(() => {
+            mongoose.connection.close(done);
+        });
     });
 
     describe('GET /hello', () => {
